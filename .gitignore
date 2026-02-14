@@ -1,0 +1,19 @@
+#We enforce clean repos by ignoring build artifacts, 
+#dependency folders, and state/secrets files to avoid drift and credential leaks
+
+#Node:
+node_modules/
+dist/
+.next/ (if Next.js later)
+#Env files:
+.env
+.env.*
+#Terraform:
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl (this one can be committed sometimes; we’ll decide later)
+#OS:
+.DS_Store
+.env
+
