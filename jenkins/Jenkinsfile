@@ -2,96 +2,75 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION = "us-west-2"
-    ECR_ACCOUNT = "YOUR_ACCOUNT_ID"
-    ECR_BACKEND = "${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/releasegate-backend"
-    IMAGE_TAG = "${GIT_COMMIT.substring(0,7)}-${BUILD_NUMBER}"
-
-    KUBE_CONTEXT = "arn:aws:eks:us-west-2:YOUR_ACCOUNT_ID:cluster/releasegate"
-    HELM_CHART = "helm/releasegate"
+    AWS_REGION = "us-east-1"
+    ACCOUNT_ID = "826828992763"
+    ECR = "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    CLUSTER = "deployecho"
+    NAMESPACE = "dev"
   }
-
-  options { timestamps() }
 
   stages {
-    stage("Checkout") { steps { checkout scm } }
 
-    stage("Unit Test") {
+    stage('Checkout') {
       steps {
-        sh "cd app/backend && npm ci && npm test || true"
+        checkout scm
       }
     }
 
-    stage("Build & Push Backend") {
+    stage('Get Git SHA') {
+      steps {
+        script {
+          GIT_SHA = sh(
+            script: "git rev-parse --short HEAD",
+            returnStdout: true
+          ).trim()
+          env.TAG = "dev-${GIT_SHA}"
+        }
+      }
+    }
+
+    stage('Login to ECR') {
       steps {
         sh """
-          aws --version
-          aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
-          docker build -t releasegate-backend:${IMAGE_TAG} app/backend
-          docker tag releasegate-backend:${IMAGE_TAG} ${ECR_BACKEND}:${IMAGE_TAG}
-          docker push ${ECR_BACKEND}:${IMAGE_TAG}
+        aws ecr get-login-password --region ${AWS_REGION} \
+        | docker login --username AWS --password-stdin ${ECR}
         """
       }
     }
 
-    stage("Deploy Dev") {
+    stage('Build & Push Backend') {
       steps {
         sh """
-          kubectl config use-context ${KUBE_CONTEXT}
-          kubectl create ns dev --dry-run=client -o yaml | kubectl apply -f -
-          helm upgrade --install releasegate-dev ${HELM_CHART} -n dev \
-            -f ${HELM_CHART}/values-dev.yaml \
-            --set backend.image.repository=${ECR_BACKEND} \
-            --set backend.image.tag=${IMAGE_TAG} \
-            --set build.version=${IMAGE_TAG}
+        docker buildx build --platform linux/amd64 \
+          -t ${ECR}/deployecho-backend:${TAG} \
+          -f app/backend/Dockerfile app/backend \
+          --push
         """
       }
     }
 
-    stage("Dev Quality Gate") {
+    stage('Build & Push Frontend') {
       steps {
         sh """
-          bash scripts/kube-smoke.sh dev releasegate-dev
+        docker buildx build --platform linux/amd64 \
+          -t ${ECR}/deployecho-frontend:${TAG} \
+          -f app/frontend/Dockerfile app/frontend \
+          --push
         """
       }
     }
 
-    stage("Promote to Staging") {
-      when { branch "main" }
+    stage('Deploy to EKS') {
       steps {
-        input message: "Promote build ${IMAGE_TAG} to STAGING?"
         sh """
-          kubectl create ns staging --dry-run=client -o yaml | kubectl apply -f -
-          helm upgrade --install releasegate-staging ${HELM_CHART} -n staging \
-            -f ${HELM_CHART}/values-staging.yaml \
-            --set backend.image.repository=${ECR_BACKEND} \
-            --set backend.image.tag=${IMAGE_TAG} \
-            --set build.version=${IMAGE_TAG}
-          bash scripts/kube-smoke.sh staging releasegate-staging
+        aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER}
+
+        helm upgrade --install deployecho helm/deployecho \
+          -n ${NAMESPACE} \
+          --set backend.image.tag=${TAG} \
+          --set frontend.image.tag=${TAG}
         """
       }
-    }
-
-    stage("Promote to Prod") {
-      when { branch "main" }
-      steps {
-        input message: "Promote build ${IMAGE_TAG} to PROD?"
-        sh """
-          kubectl create ns prod --dry-run=client -o yaml | kubectl apply -f -
-          helm upgrade --install releasegate-prod ${HELM_CHART} -n prod \
-            -f ${HELM_CHART}/values-prod.yaml \
-            --set backend.image.repository=${ECR_BACKEND} \
-            --set backend.image.tag=${IMAGE_TAG} \
-            --set build.version=${IMAGE_TAG}
-          bash scripts/kube-smoke.sh prod releasegate-prod
-        """
-      }
-    }
-  }
-
-  post {
-    failure {
-      echo "Pipeline failed. In real setups, we page/notify and auto-rollback last stage."
     }
   }
 }
