@@ -31,12 +31,25 @@ pipeline {
 
     stage('Login to ECR') {
       steps {
-        sh """
-        aws ecr get-login-password --region ${AWS_REGION} \
-        | docker login --username AWS --password-stdin ${ECR}
-        """
+        withCredentials([[
+          $class: 'AmazonWebServicesCredentialsBinding',
+          credentialsId: 'aws-creds',
+          accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+          secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+        ]]) {
+        sh '''
+        set -e
+        aws --version
+        aws sts get-caller-identity
+
+        aws ecr get-login-password --region us-east-1 | \
+          docker login --username AWS --password-stdin \
+          826828992763.dkr.ecr.us-east-1.amazonaws.com
+      '''
+        }
       }
     }
+
 
     stage('Build & Push Backend') {
       steps {
